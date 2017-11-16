@@ -53,7 +53,7 @@ def increment_counter(metric_name, label_dict, doc=''):
 
 
 def shutdown():
-    logging.info('Shutting down')
+    logger.info('Shutting down')
     sys.exit(1)
 
 
@@ -99,21 +99,31 @@ def main():
     parser.add_argument(
         '-v', '--verbose', action='store_true',
         help='turn on verbose (DEBUG) logging. Overrides --log-level.')
+    parser.add_argument(
+        '-q', '--quiet', action='store_true',
+        help='turn on quiet logging.')
     args = parser.parse_args()
 
-    log_handler = logging.StreamHandler()
-    log_format = '[%(asctime)s] %(name)s.%(levelname)s %(threadName)s %(message)s'
-    formatter = JogFormatter(log_format) \
-        if args.json_logging \
-        else logging.Formatter(log_format)
-    log_handler.setFormatter(formatter)
-
+    # Log setup
     log_level = getattr(logging, args.log_level)
-    logging.basicConfig(
-        handlers=[log_handler],
-        level=logging.DEBUG if args.verbose else log_level
-    )
-    logging.captureWarnings(True)
+    if args.quiet:
+        logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', 
+                            level=logging.DEBUG if args.verbose else log_level)
+    else:
+        log_handler = logging.StreamHandler()
+        log_format = '[%(asctime)s] %(name)s.%(levelname)s %(threadName)s %(message)s'
+        formatter = JogFormatter(log_format) \
+            if args.json_logging \
+            else logging.Formatter(log_format)
+        log_handler.setFormatter(formatter)
+
+        logging.basicConfig(
+            handlers=[log_handler],
+            level=logging.DEBUG if args.verbose else log_level
+        )
+        logging.captureWarnings(True)
+
+    logger = logging.getLogger(__name__)
 
     port = args.port
 
@@ -146,9 +156,9 @@ def main():
     high_water_interval = args.high_water_interval
     low_water_interval = args.low_water_interval
 
-    logging.info('Starting server...')
+    logger.info('Starting server...')
     start_http_server(port)
-    logging.info('Server started on port %s', port)
+    logger.info('Server started on port %s', port)
 
     def read_short(bytes):
         num = unpack_from('>h', bytes)[0]
@@ -194,7 +204,8 @@ def main():
             return (version, offset, metadata, commit_timestamp, expire_timestamp)
 
     def update_topics(api_version, metadata):
-        logging.info('Received topics and partition assignments')
+        if not args.quiet:
+            logger.info('Received topics and partition assignments')
 
         global topics
 
@@ -218,7 +229,7 @@ def main():
             error_code = t[TOPIC_ERROR]
             if error_code:
                 error = Errors.for_code(error_code)(t)
-                logging.warning('Received error in metadata response at topic level: %s', error)
+                logger.warning('Received error in metadata response at topic level: %s', error)
             else:
                 topic = t[TOPIC_NAME]
                 partitions = t[TOPIC_PARTITIONS]
@@ -228,12 +239,12 @@ def main():
                     error_code = p[PARTITION_ERROR]
                     if error_code:
                         error = Errors.for_code(error_code)(p)
-                        logging.warning('Received error in metadata response at partition level for topic %(topic)s: %(error)s',
+                        logger.warning('Received error in metadata response at partition level for topic %(topic)s: %(error)s',
                                         {'topic': topic, 'error': error})
                     else:
                         partition = p[PARTITION_NUMBER]
                         leader = p[PARTITION_LEADER]
-                        logging.debug('Received partition assignment for partition %(partition)s of topic %(topic)s',
+                        logger.debug('Received partition assignment for partition %(partition)s of topic %(topic)s',
                                       {'partition': partition, 'topic': topic})
 
                         new_partitions[partition] = leader
@@ -243,16 +254,17 @@ def main():
         topics = new_topics
 
     def update_highwater(offsets):
-        logging.info('Received high-water marks')
+        if not args.quiet:
+            logger.info('Received high-water marks')
 
         for topic, partitions in offsets.topics:
             for partition, error_code, offsets in partitions:
                 if error_code:
                     error = Errors.for_code(error_code)((partition, error_code, offsets))
-                    logging.warning('Received error in offset response for topic %(topic)s: %(error)s',
+                    logger.warning('Received error in offset response for topic %(topic)s: %(error)s',
                                     {'topic': topic, 'error': error})
                 else:
-                    logging.debug('Received high-water marks for partition %(partition)s of topic %(topic)s',
+                    logger.debug('Received high-water marks for partition %(partition)s of topic %(topic)s',
                                   {'partition': partition, 'topic': topic})
 
                     update_gauge(
@@ -266,16 +278,17 @@ def main():
                     )
 
     def update_lowwater(offsets):
-        logging.info('Received low-water marks')
+        if not args.quiet:
+            logger.info('Received low-water marks')
 
         for topic, partitions in offsets.topics:
             for partition, error_code, offsets in partitions:
                 if error_code:
                     error = Errors.for_code(error_code)((partition, error_code, offsets))
-                    logging.warning('Received error in offset response for topic %(topic)s: %(error)s',
+                    logger.warning('Received error in offset response for topic %(topic)s: %(error)s',
                                     {'topic': topic, 'error': error})
                 else:
-                    logging.debug('Received low-water marks for partition %(partition)s of topic %(topic)s',
+                    logger.debug('Received low-water marks for partition %(partition)s of topic %(topic)s',
                                   {'partition': partition, 'topic': topic})
 
                     update_gauge(
@@ -289,13 +302,14 @@ def main():
                     )                   
 
     def fetch_topics(this_time):
-        logging.info('Requesting topics and partition assignments')
+        if not args.quiet:
+            logger.info('Requesting topics and partition assignments')
 
         next_time = this_time + topic_interval
         try:
             node = client.least_loaded_node()
 
-            logging.debug('Requesting topics and partition assignments from %(node)s',
+            logger.debug('Requesting topics and partition assignments from %(node)s',
                           {'node': node})
 
             api_version = 0 if client.config['api_version'] < (0, 10) else 1
@@ -303,12 +317,13 @@ def main():
             f = client.send(node, request)
             f.add_callback(update_topics, api_version)
         except Exception:
-            logging.exception('Error requesting topics and partition assignments')
+            logger.exception('Error requesting topics and partition assignments')
         finally:
             client.schedule(partial(fetch_topics, next_time), next_time)
 
     def fetch_highwater(this_time):
-        logging.info('Requesting high-water marks')
+        if not args.quiet:
+            logger.info('Requesting high-water marks')
         next_time = this_time + high_water_interval
         try:
             global topics
@@ -323,7 +338,7 @@ def main():
                         nodes[leader][topic].append(partition)
 
                 for node, topic_map in nodes.items():
-                    logging.debug('Requesting high-water marks from %(node)s',
+                    logger.debug('Requesting high-water marks from %(node)s',
                                   {'topic': topic, 'node': node})
 
                     request = OffsetRequest[0](
@@ -336,12 +351,13 @@ def main():
                     f = client.send(node, request)
                     f.add_callback(update_highwater)
         except Exception:
-            logging.exception('Error requesting high-water marks')
+            logger.exception('Error requesting high-water marks')
         finally:
             client.schedule(partial(fetch_highwater, next_time), next_time)
 
     def fetch_lowwater(this_time):
-        logging.info('Requesting low-water marks')
+        if not args.quiet:
+            logger.info('Requesting low-water marks')
         next_time = this_time + low_water_interval
         try:
             global topics
@@ -356,7 +372,7 @@ def main():
                         nodes[leader][topic].append(partition)
 
                 for node, topic_map in nodes.items():
-                    logging.debug('Requesting low-water marks from %(node)s',
+                    logger.debug('Requesting low-water marks from %(node)s',
                                   {'topic': topic, 'node': node})
 
                     request = OffsetRequest[0](
@@ -369,7 +385,7 @@ def main():
                     f = client.send(node, request)
                     f.add_callback(update_lowwater)
         except Exception:
-            logging.exception('Error requesting low-water marks')
+            logger.exception('Error requesting low-water marks')
         finally:
             client.schedule(partial(fetch_lowwater, next_time), next_time)
 
